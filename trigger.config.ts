@@ -2,7 +2,7 @@ import { defineConfig } from "@trigger.dev/sdk";
 
 export default defineConfig({
   // Your Trigger.dev project ref (cloud.trigger.dev → Project settings). Not a secret.
-  project: "proj_REPLACE_ME",
+  project: "proj_trklqbcaoyacwtcmmxin",
   dirs: ["./src/trigger"],
   maxDuration: 300,
   retries: {
