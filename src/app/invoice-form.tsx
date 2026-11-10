@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { BUSINESS } from "@/invoice/business";
 import type { InvoiceInput } from "@/invoice/schema";
 import { computeTotals, formatMoney } from "@/invoice/totals";
-import { getRunStatus, submitInvoice } from "./actions";
+import { submitInvoice } from "./actions";
 
 type Item = { description: string; quantity: string; rate: string };
 type Preview = { url: string; payload: InvoiceInput };
@@ -42,7 +42,6 @@ export function InvoiceForm() {
   const [items, setItems] = useState<Item[]>([blankItem()]);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [preview, setPreview] = useState<Preview | null>(null);
-  const polling = useRef(false);
 
   // Dates and the invoice # depend on your local clock, so set them after mount.
   function resetDefaults() {
@@ -109,42 +108,15 @@ export function InvoiceForm() {
   async function onSend() {
     if (!preview || phase.kind === "sending") return;
     const payload = preview.payload; // exactly what was previewed
-    setPhase({ kind: "sending", label: "Starting…" });
+    setPhase({ kind: "sending", label: "Building the PDF and emailing it…" });
 
     const res = await submitInvoice(payload).catch((err: Error) => ({ ok: false as const, error: err.message }));
     if (!res.ok) {
       setPhase({ kind: "error", message: res.error });
       return;
     }
-
-    setPhase({ kind: "sending", label: "Building the PDF and emailing it…" });
-    polling.current = true;
-    const started = Date.now();
-    while (polling.current && Date.now() - started < 3 * 60_000) {
-      await new Promise((r) => setTimeout(r, 2000));
-      try {
-        const s = await getRunStatus(res.runId);
-        if (s.done) {
-          polling.current = false;
-          setPreview(null);
-          setPhase(
-            s.ok
-              ? { kind: "sent", message: `Sent the ${s.output?.total ?? ""} invoice to ${s.output?.sentTo ?? payload.clientEmail}.` }
-              : { kind: "error", message: s.error ?? "The job failed." },
-          );
-          return;
-        }
-        setPhase({
-          kind: "sending",
-          label: s.status === "EXECUTING" ? "Building the PDF and emailing it…" : "Queued…",
-        });
-      } catch {
-        /* transient; keep polling */
-      }
-    }
-    polling.current = false;
     setPreview(null);
-    setPhase({ kind: "error", message: `Still running. Check run ${res.runId} in the Trigger.dev dashboard.` });
+    setPhase({ kind: "sent", message: `Sent the ${res.total} invoice to ${res.sentTo}.` });
   }
 
   function startNew() {

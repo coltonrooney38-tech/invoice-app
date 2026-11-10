@@ -1,10 +1,10 @@
 "use server";
 
 import { cookies } from "next/headers";
-import { runs, tasks } from "@trigger.dev/sdk";
 import { AUTH_COOKIE, isValidToken } from "@/lib/auth";
 import { InvoiceInputSchema } from "@/invoice/schema";
-import type { sendInvoice } from "@/trigger/send-invoice";
+import { deliverInvoice } from "@/invoice/send";
+import { GmailError } from "@/lib/composio";
 
 async function requireAuth() {
   if (!(await isValidToken((await cookies()).get(AUTH_COOKIE)?.value))) {
@@ -12,8 +12,12 @@ async function requireAuth() {
   }
 }
 
-export type SubmitResult = { ok: true; runId: string } | { ok: false; error: string };
+export type SubmitResult =
+  | { ok: true; total: string; sentTo: string }
+  | { ok: false; error: string };
 
+// Sends right away from the server (PDF + Gmail via Composio). No background
+// worker needed, so the site works without Trigger.dev.
 export async function submitInvoice(input: unknown): Promise<SubmitResult> {
   await requireAuth();
   const parsed = InvoiceInputSchema.safeParse(input);
@@ -21,37 +25,17 @@ export async function submitInvoice(input: unknown): Promise<SubmitResult> {
     return { ok: false, error: parsed.error.issues.map((i) => i.message).join(" · ") };
   }
   try {
-    const handle = await tasks.trigger<typeof sendInvoice>("send-invoice", parsed.data, {
-      // A double-click or re-send of the same invoice # within 10 minutes
-      // reuses the first run instead of emailing the client twice.
-      idempotencyKey: `invoice-${parsed.data.invoiceNumber}`,
-      idempotencyKeyTTL: "10m",
-    });
-    return { ok: true, runId: handle.id };
+    const { total, sentTo } = await deliverInvoice(parsed.data);
+    return { ok: true, total, sentTo };
   } catch (e) {
-    return { ok: false, error: `Couldn't start the job: ${(e as Error).message}` };
+    const msg = (e as Error).message;
+    console.error("submitInvoice failed:", msg);
+    return {
+      ok: false,
+      error:
+        e instanceof GmailError && e.permanent
+          ? `${msg}. Gmail may need reconnecting (npm run connect).`
+          : `Couldn't send: ${msg}`,
+    };
   }
-}
-
-export type RunStatus = {
-  status: string;
-  done: boolean;
-  ok: boolean;
-  error?: string;
-  output?: { total?: string; sentTo?: string };
-};
-
-const FAILED = new Set(["FAILED", "CRASHED", "CANCELED", "SYSTEM_FAILURE", "EXPIRED", "TIMED_OUT"]);
-
-export async function getRunStatus(runId: string): Promise<RunStatus> {
-  await requireAuth();
-  const run = await runs.retrieve<typeof sendInvoice>(runId);
-  const failed = FAILED.has(run.status);
-  return {
-    status: run.status,
-    done: run.status === "COMPLETED" || failed,
-    ok: run.status === "COMPLETED",
-    error: failed ? (run.error?.message ?? run.status) : undefined,
-    output: run.status === "COMPLETED" ? run.output : undefined,
-  };
 }
